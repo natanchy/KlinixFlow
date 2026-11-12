@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
+  Cloud,
+  CloudOff,
   Cpu,
   Hash,
   LayoutDashboard,
@@ -20,10 +22,13 @@ import {
   Trash2,
   User,
   Users,
+  Wifi,
+  WifiOff,
   XCircle,
   Zap,
 } from 'lucide-react';
 import { enqueue, dequeue, removeById } from './queueLogic';
+import { db, isFirebaseConfigured, ref, onValue, set } from './firebase';
 
 // ─── LocalStorage Helpers ───────────────────────────────────────────────────
 const LS_QUEUE = 'klinixflow_queue';
@@ -778,7 +783,37 @@ export default function App() {
   useEffect(() => { saveLS(LS_ROOMS, rooms); }, [rooms]);
   useEffect(() => { saveLS(LS_LOG,   logs);  }, [logs]);
 
-  // Real-time synchronization across browser tabs
+  // ─── Firebase Realtime Sync (Cross-Device: Laptop <-> HP) ─────────────────
+  const isRemoteUpdating = useRef(false);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+
+    const dataRef = ref(db, 'klinixflow');
+    const unsubscribe = onValue(dataRef, (snapshot) => {
+      const val = snapshot.val();
+      if (val) {
+        isRemoteUpdating.current = true;
+        if (Array.isArray(val.queue)) setQueue(val.queue);
+        if (Array.isArray(val.rooms)) setRooms(val.rooms);
+        if (Array.isArray(val.logs))  setLogs(val.logs);
+        setTimeout(() => { isRemoteUpdating.current = false; }, 150);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db || isRemoteUpdating.current) return;
+    try {
+      set(ref(db, 'klinixflow'), { queue, rooms, logs });
+    } catch (e) {
+      console.error('Firebase save error:', e);
+    }
+  }, [queue, rooms, logs]);
+
+  // Real-time synchronization across browser tabs (Local Fallback)
   useEffect(() => {
     // 1. Storage event listener (fires in other tabs when localStorage changes)
     const handleStorage = (e) => {
@@ -843,8 +878,10 @@ export default function App() {
                 <span className="font-black text-lg bg-gradient-to-r from-sky-400 to-cyan-400 bg-clip-text text-transparent tracking-tight">Flow</span>
               </div>
               <div className="hidden sm:flex items-center gap-1.5 ml-2 bg-slate-800/60 border border-slate-700/60 rounded-full px-3 py-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-xs text-slate-400 font-medium">Sistem Aktif</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${isFirebaseConfigured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                <span className="text-xs text-slate-400 font-medium">
+                  {isFirebaseConfigured ? 'Cloud Sync Online' : 'Mode Lokal'}
+                </span>
               </div>
             </div>
 
