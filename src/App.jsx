@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { enqueue, dequeue, removeById } from './queueLogic';
 import { db, isFirebaseConfigured, ref, onValue, set } from './firebase';
+import { broadcastCloud, subscribeCloud } from './cloudSync';
 
 // ─── LocalStorage Helpers ───────────────────────────────────────────────────
 const LS_QUEUE = 'klinixflow_queue';
@@ -253,6 +254,7 @@ function DashboardTab({ queue, setQueue, rooms, setRooms, addLog, currentUser })
     setTimeout(() => {
       setQueue(enqueue(queue, patient));
       addLog(`Pasien "${patient.name}" (${patient.status}) didaftarkan oleh ${currentUser.username}.`);
+      broadcastCloud({ type: 'ENQUEUE', patient, user: currentUser.username });
       showNotif(`${patient.name} berhasil didaftarkan!`);
       setForm({ name: '', complaint: '', status: 'Reguler' });
       setSub(false);
@@ -268,12 +270,14 @@ function DashboardTab({ queue, setQueue, rooms, setRooms, addLog, currentUser })
     setRooms(rooms.map(r => r.id === room.id ? { ...r, patient } : r));
     addLog(`Pasien "${patient.name}" dipanggil → ${room.label}.`);
     speak(`Nomor antrean atas nama ${patient.name}, silakan masuk ke ruang periksa`);
+    broadcastCloud({ type: 'CALL', patient, room });
     showNotif(`${patient.name} dipanggil ke ${room.label}!`);
   };
 
   const handleRemove = (id, name) => {
     setQueue(removeById(queue, id));
     addLog(`Pasien "${name}" dihapus oleh ${currentUser.username}.`);
+    broadcastCloud({ type: 'REMOVE', patientId: id, patientName: name });
     showNotif(`${name} dihapus dari antrean.`, 'info');
   };
 
@@ -458,6 +462,7 @@ function RoomsTab({ rooms, setRooms, addLog, currentUser, logs }) {
   const handleFinish = (room) => {
     setRooms(rooms.map(r => r.id === room.id ? { ...r, patient: null } : r));
     addLog(`Pemeriksaan "${room.patient?.name}" di ${room.label} selesai.`);
+    broadcastCloud({ type: 'FINISH', roomId: room.id, roomLabel: room.label });
   };
 
   return (
@@ -813,6 +818,36 @@ export default function App() {
     }
   }, [queue, rooms, logs]);
 
+  // ─── Real-Time Cloud Relay (Cross-Device: Laptop <-> HP) ───────────────────
+  useEffect(() => {
+    const unsubscribe = subscribeCloud((action) => {
+      if (action.type === 'ENQUEUE' && action.patient) {
+        setQueue((prev) => {
+          if (prev.some((p) => p.id === action.patient.id)) return prev;
+          return enqueue(prev, action.patient);
+        });
+        addLog(`Pasien "${action.patient.name}" (${action.patient.status}) didaftarkan via cloud (${action.user || 'HP'}).`);
+      } else if (action.type === 'CALL' && action.patient && action.room) {
+        setQueue((prev) => prev.filter((p) => p.id !== action.patient.id));
+        setRooms((prev) =>
+          prev.map((r) => (r.id === action.room.id ? { ...r, patient: action.patient } : r))
+        );
+        addLog(`Pasien "${action.patient.name}" dipanggil → ${action.room.label}.`);
+        speak(`Nomor antrean atas nama ${action.patient.name}, silakan masuk ke ruang periksa`);
+      } else if (action.type === 'REMOVE' && action.patientId) {
+        setQueue((prev) => removeById(prev, action.patientId));
+        if (action.patientName) addLog(`Pasien "${action.patientName}" dihapus.`);
+      } else if (action.type === 'FINISH' && action.roomId) {
+        setRooms((prev) =>
+          prev.map((r) => (r.id === action.roomId ? { ...r, patient: null } : r))
+        );
+        if (action.roomLabel) addLog(`Pemeriksaan di ${action.roomLabel} selesai.`);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [addLog]);
+
   // Real-time synchronization across browser tabs (Local Fallback)
   useEffect(() => {
     // 1. Storage event listener (fires in other tabs when localStorage changes)
@@ -878,10 +913,8 @@ export default function App() {
                 <span className="font-black text-lg bg-gradient-to-r from-sky-400 to-cyan-400 bg-clip-text text-transparent tracking-tight">Flow</span>
               </div>
               <div className="hidden sm:flex items-center gap-1.5 ml-2 bg-slate-800/60 border border-slate-700/60 rounded-full px-3 py-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${isFirebaseConfigured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                <span className="text-xs text-slate-400 font-medium">
-                  {isFirebaseConfigured ? 'Cloud Sync Online' : 'Mode Lokal'}
-                </span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs text-slate-400 font-medium">Cloud Sync Aktif (Laptop ⇄ HP)</span>
               </div>
             </div>
 
